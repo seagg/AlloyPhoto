@@ -206,6 +206,7 @@
     };
     
     window.addEventListener("DOMContentLoaded", function(){
+        $AI.useWorker("js/combined/alloyimage.js");
         Main.init();
     }, false);
 

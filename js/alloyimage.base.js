@@ -1,4 +1,4 @@
-/*
+/**
  * @author:Bin Wang
  * @description: Main
  *
@@ -19,14 +19,20 @@ Array.prototype.del = function(arr){
     return b;
 };
 
-//给图像对象添加初次加载才触发事件，后续不触发
-HTMLImageElement.prototype.loadOnce = function(func){
-   var i = 0;
-   this.onload = function(){
-        if(!i) func.call(this, null);
-        i ++;
-   };
-};
+//worker适配
+try{
+
+    //给图像对象添加初次加载才触发事件，后续不触发
+    HTMLImageElement.prototype.loadOnce = function(func){
+       var i = 0;
+       this.onload = function(){
+            if(!i) func.call(this, null);
+            i ++;
+       };
+    };
+}catch(e){
+    window = {};
+}
 
 ;(function(Ps){
 
@@ -91,6 +97,11 @@ HTMLImageElement.prototype.loadOnce = function(func){
             return this.lib.addLayer.add(lowerData, upperData, method, alpha, dx, dy, isFast, channel);
         },
 
+        //用worker进行异步处理
+        worker: function(func, callback){
+            
+        },
+
         //对图像进行掩模算子变换
         applyMatrix: function(imgData, matrixArr){
         }
@@ -149,7 +160,7 @@ HTMLImageElement.prototype.loadOnce = function(func){
             this.ctxContext = canvas.getContext("2d");
 
             //默认使用worker进行处理
-            this.useWorker = 1;
+            this.useWorker = P.useWorker;
 
             //初始化readyState为ready,readyState表明处理就绪
             this.readyState = 1;
@@ -176,10 +187,58 @@ HTMLImageElement.prototype.loadOnce = function(func){
         return P.lib.dorsyMath;
     };
 
+    window[Ps].setName = function(name){
+        P.name = name || "alloyimage.js";
+    };
+
+    //定义使用worker,需要给出alloyimage所在路径
+    window[Ps].useWorker = function(path){
+        
+        //如果不能使用worker，直接降级为单线程
+        if(! window.Worker){
+            this.useWorker = 0;
+
+            console.log("AI_WARNING: 浏览器不支持web worker, 自动切换为单线程\nAI_WARNING: the brower doesn't support Web Worker");
+            return;
+        }
+
+        var path = path || "";
+
+        //如果以目录给出，默认为默认文件名
+        if(/[\/\\]$/.test(path)){
+            path = path + P.name;
+        }else{
+        }
+
+        if(path == "") path = "alloyimage.js";
+
+        P.useWorker = 1;
+        P.path = path;
+
+        //检测文件是否存在
+        var xhr = new XMLHttpRequest();
+        xhr.onreadystatechange = function(){
+
+            if(xhr.readyState == 4){
+
+                if(xhr.status == "404"){
+                    P.destroySelf("AI_ERROR：使用worker时，ai文件路径指定错误\nAI_ERROR: error occured while using web worker since indicate the wrong path of file ai");
+                }
+            }
+        };
+        xhr.open("GET", path, false);
+        xhr.send();
+    };
+
     //worker监听
-    onmessage = function(data){
-        P.reflect(data[1], data[2], data[3]);
-        postMessge("OK");
+    onmessage = function(e){
+        var data = e.data, imgData;
+        if(data[0] == "act"){
+            imgData = P.reflect(data[1], data[2], data[3]);
+        }else if(data[0] == "add"){
+            imgData = P.add.apply(P, data[1]);
+        }
+        postMessage(imgData);
     };
 
     //原型对象
@@ -187,7 +246,7 @@ HTMLImageElement.prototype.loadOnce = function(func){
 
         //动作
         act: function(method, arg){
-            console.log("actStart");
+            //console.log("actStart");
             var args = [];
 
             //提取参数为数组
@@ -196,12 +255,8 @@ HTMLImageElement.prototype.loadOnce = function(func){
             if(this.useWorker){
                 this.dorsyWorker.queue.push(["act", method, args]);
 
-
-                //如果readyState为就绪状态 表明act为阶段首次动作,进入worker
-                if(this.readyState){
-                    this.readyState = 0;
-                    this.dorsyWorker.startWorker();
-                }
+                checkStartWorker.call(this);
+                
             }else{
                 //做一次转发映射
                 P.reflect(method, this.imgData, args);
@@ -256,27 +311,34 @@ HTMLImageElement.prototype.loadOnce = function(func){
                 }
             }
 
-            /*
-            //创建一个临时的psLib对象，防止因为合并显示对本身imgData影响
-            var tempPsLib = new window[Ps](this.canvas.width, this.canvas.height);
-            tempPsLib.add(this, "正常", 0, 0, isFast);
-            this.tempPsLib = tempPsLib;
+            //如果其上无其他挂载图层，加快处理
+            if(this.layers.length == 0){
+                this.tempPsLib = {
+                    imgData: this.imgData
+                };
+            }else{
 
-            //将挂接到本对象上的图层对象 一起合并到临时的psLib对象上去 用于显示合并的结果，不会影响每个图层，包括本图层
-            for(var i = 0; i < this.layers.length; i ++){
-                var tA = this.layers[i];
-                var layers = tA[0].layers;
-                var currLayer = tA[0];
+                //创建一个临时的psLib对象，防止因为合并显示对本身imgData影响
+                var tempPsLib = new window[Ps](this.canvas.width, this.canvas.height);
+                tempPsLib.add(this, "正常", 0, 0, isFast);
+                this.tempPsLib = tempPsLib;
 
-                if(layers[layers.length - 1] && layers[layers.length - 1][0].type == 1) currLayer = layers[layers.length - 1][0];
-                tempPsLib.add(currLayer, tA[1], tA[2], tA[3], isFast);
+                //将挂接到本对象上的图层对象 一起合并到临时的psLib对象上去 用于显示合并的结果，不会影响每个图层，包括本图层
+                for(var i = 0; i < this.layers.length; i ++){
+                    var tA = this.layers[i];
+                    var layers = tA[0].layers;
+                    var currLayer = tA[0];
+
+                    if(layers[layers.length - 1] && layers[layers.length - 1][0].type == 1) currLayer = layers[layers.length - 1][0];
+                    tempPsLib.add(currLayer, tA[1], tA[2], tA[3], isFast);
+                }
+
+                this.context.clearRect(0, 0, this.canvas.width, this.canvas.height);
+
             }
 
-            this.context.clearRect(0, 0, this.canvas.width, this.canvas.height);
-
             //以临时对象data显示
-            */
-            this.context.putImageData(this.imgData, 0, 0);
+            this.context.putImageData(this.tempPsLib.imgData, 0, 0);
 
             if(selector){
                 document.querySelector(selector).appendChild(this.canvas);
@@ -288,10 +350,20 @@ HTMLImageElement.prototype.loadOnce = function(func){
         },
 
         //替换原来的图片
-        replace: function(img){
+        replace: function(img, workerFlag){
+            if(workerFlag){
+            }else{
+                if(this.useWorker){
+                    this.dorsyWorker.queue.push(['replace', img]);
+                    checkStartWorker.call(this);
+
+                    return this;
+                }
+            }
+
             if(img){
                 img.onload = function(){};
-                img.src = this.save();
+                img.src = this.save(0, workerFlag);
             }
 
             return this;
@@ -337,8 +409,17 @@ HTMLImageElement.prototype.loadOnce = function(func){
 
             psLibObj = arguments[0];
 
-            //做映射转发
-            this.imgData = P.add(this.imgData, psLibObj.imgData, method, alpha, dx, dy, isFast, channel);
+            //console.log("add init");
+
+            if(this.useWorker){
+                this.dorsyWorker.queue.push(['add', psLibObj, method, alpha, dx, dy, isFast, channel]);
+
+                checkStartWorker.call(this);
+
+            }else{
+                //做映射转发
+                this.imgData = P.add(this.imgData, psLibObj.imgData, method, alpha, dx, dy, isFast, channel);
+            }
 
             return this;
         },
@@ -350,7 +431,18 @@ HTMLImageElement.prototype.loadOnce = function(func){
             return this;
         },
 
-        clone: function(){
+        clone: function(workerFlag){
+
+            /*
+            if(workerFlag){
+            }else{
+
+                if(this.useWorker){
+                    this.dorsyWorker.queue.push(['clone']);
+                    return this;
+                }
+            }
+            */
 
             var tempPsLib = new window[Ps](this.canvas.width, this.canvas.height);
             tempPsLib.context.putImageData(this.imgData, 0, 0);
@@ -377,7 +469,17 @@ HTMLImageElement.prototype.loadOnce = function(func){
         },
 
         //返回一个合成后的图像 png base64
-        save: function(isFast){
+        save: function(isFast, workerFlag){
+            if(workerFlag){
+            }else{
+                if(this.useWorker){
+                    this.dorsyWorker.queue.push(['save']);
+                    checkStartWorker.call(this);
+
+                    return this;
+                }
+            }
+
             if(! this.layers.length){
                 this.context.putImageData(this.imgData, 0, 0);
                 return this.canvas.toDataURL(); 
@@ -488,8 +590,30 @@ HTMLImageElement.prototype.loadOnce = function(func){
         notify: function(msg){
             //通知
             if(msg == "readyStateOK") this.readyState = 1;
+        },
+
+        //所有动作异步执行完了的回调
+        complete: function(func){
+            if(this.useWorker){
+                //console.log("complete init");
+                this.dorsyWorker.queue.push(['complete', func]);
+            }else{
+                func();
+            }
         }
     };
+
+    //以下为AI所有的私有的方法,不需要公开 private methods
+
+    //检查是否要开始worker
+    function checkStartWorker(){
+
+        //如果readyState为就绪状态 表明act为阶段首次动作,进入worker
+        if(this.readyState){
+            this.readyState = 0;
+            this.dorsyWorker.startWorker();
+        }
+    }
 
 })("psLib");
 
